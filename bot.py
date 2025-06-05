@@ -48,14 +48,12 @@ SPAM_TEMPLATES = [
 ]
 
 async def send_log(message: str, context: ContextTypes.DEFAULT_TYPE = None):
-    try:
-        if context:
+    logger.info(message)
+    if context:
+        try:
             await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"Лог: {message}")
-        else:
-            async with Application.builder().token(TELEGRAM_TOKEN).build() as app:
-                await app.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"Лог: {message}")
-    except Exception as e:
-        logger.error(f"Failed to send log: {e}")
+        except Exception as e:
+            logger.error(f"Failed to send log to Telegram: {e}")
 
 async def check_vak_sms_balance():
     try:
@@ -66,7 +64,7 @@ async def check_vak_sms_balance():
         await send_log(f"Vak SMS balance: {balance}")
         return balance > 0
     except Exception as e:
-        logger.error(f"Logger: Vak SMS balance check failed: {e}")
+        logger.error(f"Vak SMS balance check failed: {e}")
         await send_log(f"Ошибка Vak SMS: {e}")
         return False
 
@@ -98,7 +96,7 @@ async def get_vak_sms_code(number_id):
             if data.get("code"):
                 await send_log(f"Получен код: {data['code']}")
                 return data["code"]
-            await asyncio.sleep(10)
+            time.sleep(10)  # Убрали await, так как это не асинхронная функция
         except Exception as e:
             await send_log(f"Ошибка получения кода: {e}")
     return None
@@ -159,7 +157,7 @@ async def register_profile(driver, conn, settings):
         login = fake.email()
         password = fake.password()
         description = fake.text(max_nb_chars=200)
-
+        
         driver.get("https://www.mamba.ru")
         time.sleep(random.uniform(3, 7))
         if driver.find_elements(By.CLASS_NAME, "captcha-form"):
@@ -190,7 +188,7 @@ async def register_profile(driver, conn, settings):
             await upload_photos(driver, profile_id, conn, photos)
             likes = await start_liking(driver, profile_id, conn)
             chats = await count_chats(driver, profile_id, conn)
-            await send_log(f"Анкета ID{profile_id}: {likes} лайков, {chats} чатов", context=None)
+            await send_log(f"Анкета ID{profile_id}: {likes} лайков, {chats} чатов")
             return profile_id
     except Exception as e:
         await send_log(f"Ошибка регистрации: {e}")
@@ -311,53 +309,61 @@ async def process_registration_count(update: Update, context: ContextTypes.DEFAU
         await update.message.reply_text(f"Готово: {count} анкет.", reply_markup=get_main_menu())
     except ValueError:
         await update.message.reply_text("Введите число.", reply_markup=get_main_menu())
+    except Exception as e:
+        await send_log(f"Ошибка в process_registration_count: {e}", context)
     finally:
         context.user_data['state'] = None
 
 async def handle_liking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    conn = await init_db()
-    profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active'")
-    driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
     try:
-        for profile in profiles:
-            driver.get("https://www.mamba.ru/login")
-            time.sleep(random.uniform(3, 7))
-            driver.find_element(By.ID, "email").send_keys(profile["login"])
-            driver.find_element(By.ID, "password").send_keys(profile["password"])
-            driver.find_element(By.ID, "login").click()
-            time.sleep(random.uniform(3, 7))
-            likes = await start_liking(driver, profile["id"], conn)
-            chats = await count_chats(driver, profile["id"], conn)
-            await update.message.reply_text(f"Анкета ID{profile['id']}: {likes} лайков, {chats} чатов")
-    finally:
-        driver.quit()
-        await conn.close()
-    await update.message.reply_text("Лайкинг завершён.", reply_markup=get_main_menu())
+        conn = await init_db()
+        profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active'")
+        driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
+        try:
+            for profile in profiles:
+                driver.get("https://www.mamba.ru/login")
+                time.sleep(random.uniform(3, 7))
+                driver.find_element(By.ID, "email").send_keys(profile["login"])
+                driver.find_element(By.ID, "password").send_keys(profile["password"])
+                driver.find_element(By.ID, "login").click()
+                time.sleep(random.uniform(3, 7))
+                likes = await start_liking(driver, profile["id"], conn)
+                chats = await count_chats(driver, profile["id"], conn)
+                await update.message.reply_text(f"Анкета ID{profile['id']}: {likes} лайков, {chats} чатов")
+        finally:
+            driver.quit()
+            await conn.close()
+        await update.message.reply_text("Лайкинг завершён.", reply_markup=get_main_menu())
+    except Exception as e:
+        await send_log(f"Ошибка в handle_liking: {e}", context)
 
 async def handle_update_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    conn = await init_db()
-    profiles = await conn.fetch("SELECT id, login, password FROM profiles")
-    driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
     try:
-        for profile in profiles:
-            driver.get("https://www.mamba.ru/login")
-            time.sleep(random.uniform(3, 7))
-            driver.find_element(By.ID, "email").send_keys(profile["login"])
-            driver.find_element(By.ID, "password").send_keys(profile["password"])
-            driver.find_element(By.ID, "login").click()
-            time.sleep(random.uniform(3, 7))
-            token = driver.execute_script("return localStorage.getItem('auth_token')")
-            status = "active" if driver.find_elements(By.CLASS_NAME, "profile-active") else "banned"
-            await conn.execute("UPDATE profiles SET token = $1, status = $2 WHERE id = $3", token, status, profile["id"])
-            await update.message.reply_text(f"Анкета ID{profile['id']}: {status}")
-    finally:
-        driver.quit()
-        await conn.close()
-    await update.message.reply_text("Обновление токенов завершено.", reply_markup=get_main_menu())
+        conn = await init_db()
+        profiles = await conn.fetch("SELECT id, login, password FROM profiles")
+        driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
+        try:
+            for profile in profiles:
+                driver.get("https://www.mamba.ru/login")
+                time.sleep(random.uniform(3, 7))
+                driver.find_element(By.ID, "email").send_keys(profile["login"])
+                driver.find_element(By.ID, "password").send_keys(profile["password"])
+                driver.find_element(By.ID, "login").click()
+                time.sleep(random.uniform(3, 7))
+                token = driver.execute_script("return localStorage.getItem('auth_token')")
+                status = "active" if driver.find_elements(By.CLASS_NAME, "profile-active") else "banned"
+                await conn.execute("UPDATE profiles SET token = $1, status = $2 WHERE id = $3", token, status, profile["id"])
+                await update.message.reply_text(f"Анкета ID{profile['id']}: {status}")
+        finally:
+            driver.quit()
+            await conn.close()
+        await update.message.reply_text("Обновление токенов завершено.", reply_markup=get_main_menu())
+    except Exception as e:
+        await send_log(f"Ошибка в handle_update_token: {e}", context)
 
 async def handle_upload_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
@@ -386,29 +392,34 @@ async def process_upload_photos_count(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("Загрузка фото завершена.", reply_markup=get_main_menu())
     except ValueError:
         await update.message.reply_text("Введите число.", reply_markup=get_main_menu())
+    except Exception as e:
+        await send_log(f"Ошибка в process_upload_photos_count: {e}", context)
     finally:
         context.user_data['state'] = None
 
 async def handle_delete_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    conn = await init_db()
-    profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active'")
-    driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
     try:
-        for profile in profiles:
-            driver.get("https://www.mamba.ru/profile/photos")
-            time.sleep(random.uniform(3, 7))
-            photos = driver.find_elements(By.CLASS_NAME, "photo-item")
-            for photo in photos:
-                photo.find_element(By.CLASS_NAME, "delete-button").click()
-                time.sleep(random.uniform(1, 3))
-            await conn.execute("UPDATE profiles SET photos = $1 WHERE id = $2", [], profile["id"])
-            await send_log(f"Фото удалены для ID{profile['id']}")
-    finally:
-        driver.quit()
-        await conn.close()
-    await update.message.reply_text("Удаление фото завершено.", reply_markup=get_main_menu())
+        conn = await init_db()
+        profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active'")
+        driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
+        try:
+            for profile in profiles:
+                driver.get("https://www.mamba.ru/profile/photos")
+                time.sleep(random.uniform(3, 7))
+                photos = driver.find_elements(By.CLASS_NAME, "photo-item")
+                for photo in photos:
+                    photo.find_element(By.CLASS_NAME, "delete-button").click()
+                    time.sleep(random.uniform(1, 3))
+                await conn.execute("UPDATE profiles SET photos = $1 WHERE id = $2", [], profile["id"])
+                await send_log(f"Фото удалены для ID{profile['id']}")
+        finally:
+            driver.quit()
+            await conn.close()
+        await update.message.reply_text("Удаление фото завершено.", reply_markup=get_main_menu())
+    except Exception as e:
+        await send_log(f"Ошибка в handle_delete_photos: {e}", context)
 
 async def handle_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
@@ -443,6 +454,8 @@ async def process_spam_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("Спам завершён.", reply_markup=get_main_menu())
     except ValueError:
         await update.message.reply_text("Введите число.", reply_markup=get_main_menu())
+    except Exception as e:
+        await send_log(f"Ошибка в process_spam_count: {e}", context)
     finally:
         context.user_data['state'] = None
 
@@ -510,17 +523,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await settings_menu(update, context)
 
 async def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.Text() & ~filters.Command(), message_handler))
-
-    for attempt in range(3):
-        try:
-            await app.run_polling()
-            break
-        except Exception as e:
-            await send_log(f"Ошибка запуска (попытка {attempt + 1}): {e}")
-            await asyncio.sleep(10)
+    try:
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
+        logger.info("Бот инициализирован")
+        app.add_handler(CommandHandler("start", start_command))
+        app.add_handler(MessageHandler(filters.Text() & ~filters.Command(), message_handler))
+        logger.info("Обработчики добавлены")
+        await app.initialize()  # Инициализация бота
+        await app.run_polling()  # Запуск polling
+        await app.shutdown()  # Корректное завершение
+    except Exception as e:
+        logger.error(f"Ошибка запуска: {e}")
+        raise
 
 if __name__ == '__main__':
     asyncio.run(main())
