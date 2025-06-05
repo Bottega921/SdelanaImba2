@@ -13,13 +13,17 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from faker import Faker
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Загрузка переменных из .env
+load_dotenv()
 
 # Настройка логирования
 logging.basicConfig(filename='mamba_bot.log', level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Конфигурация
+# Конфигурация из .env
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 VAK_SMS_API_KEY = os.getenv("VAK_SMS_API_KEY")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
@@ -29,7 +33,7 @@ PROXY_LIST = os.getenv("PROXY_LIST", "").split(",")
 
 fake = Faker('ru_RU')
 
-# 200 шаблонов сообщений (для примера 10, полный список из предыдущего ответа)
+# 10 шаблонов сообщений (для теста, полный список из 200 можно добавить)
 SPAM_TEMPLATES = [
     "Привет, {name}! Тут неудобно писать, давай в Telegram: {contact}",
     "Хай, {name}! Лучше продолжим в TG: {contact}",
