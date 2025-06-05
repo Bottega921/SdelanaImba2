@@ -1,0 +1,5 @@
+python-telegram-bot==20.7
+asyncpg==0.29.0
+selenium==4.17.2
+faker==20.1.0
+requests==2.31.0
