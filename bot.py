@@ -6,7 +6,7 @@ import asyncio
 import asyncpg
 import requests
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, Filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -159,7 +159,7 @@ async def register_profile(driver, conn, settings):
         login = fake.email()
         password = fake.password()
         description = fake.text(max_nb_chars=200)
-        
+
         driver.get("https://www.mamba.ru")
         time.sleep(random.uniform(3, 7))
         if driver.find_elements(By.CLASS_NAME, "captcha-form"):
@@ -512,8 +512,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(Filters.text & ~Filters.command, message_handler))
-    
+    app.add_handler(MessageHandler(filters.Text() & ~filters.Command(), message_handler))
+
     for attempt in range(3):
         try:
             await app.run_polling()
