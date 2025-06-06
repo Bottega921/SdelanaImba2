@@ -33,7 +33,7 @@ PROXY_LIST = os.getenv("PROXY_LIST", "").split(",")
 
 fake = Faker('ru_RU')
 
-# 10 шаблонов сообщений (для теста, полный список из 200 можно добавить)
+# 10 шаблонов сообщений
 SPAM_TEMPLATES = [
     "Привет, {name}! Тут неудобно писать, давай в Telegram: {contact}",
     "Хай, {name}! Лучше продолжим в TG: {contact}",
@@ -49,7 +49,7 @@ SPAM_TEMPLATES = [
 
 async def send_log(message: str, context: ContextTypes.DEFAULT_TYPE = None):
     logger.info(message)
-    if context:
+    if context and context.bot:
         try:
             await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"Лог: {message}")
         except Exception as e:
@@ -60,11 +60,9 @@ async def check_vak_sms_balance():
         response = requests.get(f"https://vak-sms.com/api/balance?apiKey={VAK_SMS_API_KEY}", timeout=10)
         response.raise_for_status()
         balance = response.json().get("balance", 0)
-        logger.info(f"Vak SMS balance: {balance}")
         await send_log(f"Vak SMS balance: {balance}")
         return balance > 0
     except Exception as e:
-        logger.error(f"Vak SMS balance check failed: {e}")
         await send_log(f"Ошибка Vak SMS: {e}")
         return False
 
@@ -96,7 +94,7 @@ async def get_vak_sms_code(number_id):
             if data.get("code"):
                 await send_log(f"Получен код: {data['code']}")
                 return data["code"]
-            time.sleep(10)  # Убрали await, так как это не асинхронная функция
+            time.sleep(10)
         except Exception as e:
             await send_log(f"Ошибка получения кода: {e}")
     return None
@@ -297,7 +295,7 @@ async def process_registration_count(update: Update, context: ContextTypes.DEFAU
 
         conn = await init_db()
         settings = await conn.fetch("SELECT * FROM settings")
-        driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
+        driver = setup_driver()
         try:
             for i in range(count):
                 profile_id = await register_profile(driver, conn, settings)
@@ -320,7 +318,7 @@ async def handle_liking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         conn = await init_db()
         profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active'")
-        driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
+        driver = setup_driver()
         try:
             for profile in profiles:
                 driver.get("https://www.mamba.ru/login")
@@ -345,7 +343,7 @@ async def handle_update_token(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         conn = await init_db()
         profiles = await conn.fetch("SELECT id, login, password FROM profiles")
-        driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
+        driver = setup_driver()
         try:
             for profile in profiles:
                 driver.get("https://www.mamba.ru/login")
@@ -381,7 +379,7 @@ async def process_upload_photos_count(update: Update, context: ContextTypes.DEFA
             return
         conn = await init_db()
         profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active' LIMIT $1", count)
-        driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
+        driver = setup_driver()
         try:
             for profile in profiles:
                 photos = random.sample(list(PHOTO_DIR.glob("*.jpg")), k=min(3, len(list(PHOTO_DIR.glob("*.jpg")))))
@@ -403,7 +401,7 @@ async def handle_delete_photos(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         conn = await init_db()
         profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active'")
-        driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
+        driver = setup_driver()
         try:
             for profile in profiles:
                 driver.get("https://www.mamba.ru/profile/photos")
@@ -438,7 +436,7 @@ async def process_spam_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
         conn = await init_db()
         telegram_username = await conn.fetchval("SELECT value FROM settings WHERE key = 'telegram_username'") or '@MyBot'
         profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active' LIMIT $1", count)
-        driver = setup_driver(random.choice(PROXY_LIST) if PROXY_LIST else None)
+        driver = setup_driver()
         try:
             for profile in profiles:
                 driver.get("https://www.mamba.ru/login")
@@ -522,19 +520,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "Настройки":
         await settings_menu(update, context)
 
-async def main():
+def main():
     try:
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
         logger.info("Бот инициализирован")
-        app.add_handler(CommandHandler("start", start_command))
-        app.add_handler(MessageHandler(filters.Text() & ~filters.Command(), message_handler))
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(MessageHandler(filters.Text() & ~filters.Command(), message_handler))
         logger.info("Обработчики добавлены")
-        await app.initialize()  # Инициализация бота
-        await app.run_polling()  # Запуск polling
-        await app.shutdown()  # Корректное завершение
+        application.run_polling()
     except Exception as e:
         logger.error(f"Ошибка запуска: {e}")
-        raise
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
