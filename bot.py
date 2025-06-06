@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация из .env
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-SMS_ACTIVATE_API_KEY = os.getenv("SMS_ACTIVATE_API_KEY")  # Новый ключ для SMS-Activate
+VAK_SMS_API_KEY = os.getenv("VAK_SMS_API_KEY")  # Возвращаем Vak SMS
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DB_CONFIG = {"dsn": os.getenv("DB_URL")}
 PHOTO_DIR = Path("photos")
@@ -39,9 +39,9 @@ PROXY_LIST = os.getenv("PROXY_LIST", "").split(",")
 if not TELEGRAM_TOKEN:
     logger.error("TELEGRAM_TOKEN не указан в .env")
     raise ValueError("TELEGRAM_TOKEN не указан в .env")
-if not SMS_ACTIVATE_API_KEY:
-    logger.error("SMS_ACTIVATE_API_KEY не указан в .env")
-    raise ValueError("SMS_ACTIVATE_API_KEY не указан в .env")
+if not VAK_SMS_API_KEY:
+    logger.error("VAK_SMS_API_KEY не указан в .env")
+    raise ValueError("VAK_SMS_API_KEY не указан в .env")
 if not ADMIN_CHAT_ID:
     logger.error("ADMIN_CHAT_ID не указан в .env")
     raise ValueError("ADMIN_CHAT_ID не указан в .env")
@@ -82,66 +82,49 @@ async def send_log(message: str, context: ContextTypes.DEFAULT_TYPE = None):
         except Exception as e:
             logger.error(f"Не удалось отправить лог в Telegram: {e}")
 
-async def check_sms_activate_balance():
+async def check_vak_sms_balance():
     try:
-        response = requests.get(f"https://api.sms-activate.io/stubs/handler_api.php?api_key={SMS_ACTIVATE_API_KEY}&action=getBalance", timeout=10)
+        response = requests.get(f"https://vak-sms.com/api/balance?apiKey={VAK_SMS_API_KEY}", timeout=10)
         response.raise_for_status()
-        balance = float(response.text.split(":")[1])
-        await send_log(f"SMS-Activate balance: {balance} RUB")
+        balance = response.json().get("balance", 0)
+        await send_log(f"Vak SMS balance: {balance}")
         return balance > 0
     except Exception as e:
-        await send_log(f"Ошибка SMS-Activate: {e}")
+        await send_log(f"Ошибка Vak SMS: {e}")
         return False
 
-async def get_sms_activate_number():
+async def get_vak_sms_number():
     try:
         response = requests.get(
-            f"https://api.sms-activate.io/stubs/handler_api.php?api_key={SMS_ACTIVATE_API_KEY}&action=getNumber&service=mm&country=0",
+            f"https://vak-sms.com/api/getNumber?apiKey={VAK_SMS_API_KEY}&service=ms&country=ru",
             timeout=10
         )
         response.raise_for_status()
-        data = response.text.split(":")
-        if data[0] == "ACCESS_NUMBER":
-            activation_id = data[1]
-            number = data[2]
-            await send_log(f"Получен номер: +{number}, ID активации: {activation_id}")
-            return number, activation_id
-        raise Exception("SMS-Activate error: No numbers available")
+        data = response.json()
+        if data.get("tel"):
+            await send_log(f"Получен номер: {data['tel']}")
+            return data["tel"], data["id"]
+        raise Exception("Vak SMS error")
     except Exception as e:
         await send_log(f"Ошибка получения номера: {e}")
         raise
 
-async def get_sms_activate_code(activation_id):
+async def get_vak_sms_code(number_id):
     for _ in range(5):
         try:
             response = requests.get(
-                f"https://api.sms-activate.io/stubs/handler_api.php?api_key={SMS_ACTIVATE_API_KEY}&action=getStatus&id={activation_id}",
+                f"https://vak-sms.com/api/getCode?apiKey={VAK_SMS_API_KEY}&id={number_id}",
                 timeout=10
             )
             response.raise_for_status()
-            if "STATUS_OK" in response.text:
-                code = response.text.split(":")[1]
-                await send_log(f"Получен код: {code}")
-                return code
-            elif "STATUS_WAIT_CODE" in response.text:
-                time.sleep(10)
-                continue
-            else:
-                raise Exception("SMS-Activate error: " + response.text)
+            data = response.json()
+            if data.get("code"):
+                await send_log(f"Получен код: {data['code']}")
+                return data["code"]
+            time.sleep(10)
         except Exception as e:
             await send_log(f"Ошибка получения кода: {e}")
     return None
-
-async def set_sms_activate_status(activation_id, status):
-    try:
-        response = requests.get(
-            f"https://api.sms-activate.io/stubs/handler_api.php?api_key={SMS_ACTIVATE_API_KEY}&action=setStatus&id={activation_id}&status={status}",
-            timeout=10
-        )
-        response.raise_for_status()
-        await send_log(f"Статус активации {activation_id} изменён на {status}")
-    except Exception as e:
-        await send_log(f"Ошибка изменения статуса активации: {e}")
 
 async def init_db():
     try:
@@ -207,8 +190,8 @@ async def register_profile(driver, conn, settings):
             await send_log("CAPTCHA при регистрации, пропускаем")
             return None
         
-        # Покупка номера через SMS-Activate
-        number, activation_id = await get_sms_activate_number()
+        # Покупка номера через Vak SMS
+        number, number_id = await get_vak_sms_number()
         if not number:
             await send_log("Не удалось получить номер для регистрации")
             return None
@@ -220,18 +203,16 @@ async def register_profile(driver, conn, settings):
         driver.find_element(By.ID, "age").send_keys(str(age))
         driver.find_element(By.ID, "gender").find_element(By.XPATH, "//option[@value='female']").click()
         driver.find_element(By.ID, "description").send_keys(description)
-        driver.find_element(By.ID, "phone").send_keys(f"+{number}")
+        driver.find_element(By.ID, "phone").send_keys(number)
         driver.find_element(By.ID, "submit").click()
         time.sleep(random.uniform(3, 7))
         
         # Получение кода верификации
-        await set_sms_activate_status(activation_id, 1)  # Сообщаем, что готовы принимать SMS
-        code = await get_sms_activate_code(activation_id)
+        code = await get_vak_sms_code(number_id)
         if code:
             driver.find_element(By.ID, "code").send_keys(code)
             driver.find_element(By.ID, "verify").click()
             time.sleep(random.uniform(3, 7))
-            await set_sms_activate_status(activation_id, 6)  # Успешное получение кода
             # Завершение регистрации и оформление профиля
             token = driver.execute_script("return localStorage.getItem('auth_token')")
             photos = random.sample(list(PHOTO_DIR.glob("*.jpg")), k=min(3, len(list(PHOTO_DIR.glob("*.jpg")))))
@@ -244,7 +225,6 @@ async def register_profile(driver, conn, settings):
             await send_log(f"Анкета ID{profile_id} успешно зарегистрирована")
             return profile_id
         else:
-            await set_sms_activate_status(activation_id, 8)  # Отмена активации
             await send_log("Не удалось получить код верификации")
             return None
     except Exception as e:
@@ -371,8 +351,8 @@ async def process_registration_count(update: Update, context: ContextTypes.DEFAU
         if count < 1 or count > 500:
             await update.message.reply_text("❌ Введите число от 1 до 500.", reply_markup=get_main_menu())
             return
-        if not await check_sms_activate_balance():
-            await update.message.reply_text("💸 Недостаточно средств на SMS-Activate.", reply_markup=get_main_menu())
+        if not await check_vak_sms_balance():
+            await update.message.reply_text("💸 Недостаточно средств на Vak SMS.", reply_markup=get_main_menu())
             return
 
         conn = await init_db()
