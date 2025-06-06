@@ -3,13 +3,7 @@ FROM python:3.8-slim
 WORKDIR /app
 
 # Установка системных зависимостей
-RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
-    xdg-utils \  # Добавляем xdg-utils для устранения предупреждения
-    --no-install-recommends \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y chromium chromium-driver xdg-utils --no-install-recommends && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Создание виртуального окружения
 RUN python -m venv /venv
