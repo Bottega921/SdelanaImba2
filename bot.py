@@ -5,8 +5,8 @@ import logging
 import asyncio
 import asyncpg
 import requests
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes  # Изменен импорт
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove  # Импорт из telegram
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -14,7 +14,7 @@ from selenium.webdriver.common.by import By
 from faker import Faker
 from pathlib import Path
 from dotenv import load_dotenv
-from webdriver_manager.chrome import ChromeDriverManager  # Добавлено для автоматической установки ChromeDriver
+from webdriver_manager.chrome import ChromeDriverManager
 import re
 
 # Загрузка переменных из .env
@@ -120,7 +120,7 @@ async def get_vak_sms_number():
             f"https://vak-sms.com/api/getNumber?apiKey={VAK_SMS_API_KEY}&service=ms&country=ru",
             timeout=10
         )
-        v1_response.raise_for_status()
+        v1176_response.raise_for_status()
         v1_data = v1_response.json()
         if v1_data.get("tel"):
             await send_log(f"Получен номер через v1: {v1_data['tel']}")
@@ -206,7 +206,7 @@ def setup_driver(proxy=None):
     chrome_options.add_argument(f"user-agent={fake.user_agent()}")
     if proxy:
         chrome_options.add_argument(f"--proxy-server={proxy}")
-    service = Service(ChromeDriverManager().install())  # Изменено на ChromeDriverManager
+    service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
@@ -417,7 +417,7 @@ async def handle_liking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         conn = await init_db()
         profiles = await conn.fetch("SELECT id FROM profiles WHERE status = 'active' AND likes_count < 200")
-        driver = None  # Инициализируем driver как None
+        driver = None
         try:
             driver = setup_driver()
             for profile in profiles:
