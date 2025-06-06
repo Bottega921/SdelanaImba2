@@ -88,50 +88,76 @@ async def send_log(message: str, context: ContextTypes.DEFAULT_TYPE = None):
 
 async def check_vak_sms_balance():
     try:
-        response = requests.get(f"https://vak-sms.com/api/balance?apiKey={VAK_SMS_API_KEY}", timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        balance = float(data.get("balance", 0))  # Приводим к float, чтобы точно сравнивать
-        await send_log(f"Vak SMS balance: {balance} рублей")
-        if balance < 10:  # Минимальная сумма для покупки номера (примерно 10 рублей)
-            await send_log(f"Баланс Vak SMS ({balance} рублей) недостаточен для покупки номера (нужно минимум 10 рублей).")
-            return False
-        return True
+        # Попробуем v1
+        v1_response = requests.get(f"https://vak-sms.com/api/balance?apiKey={VAK_SMS_API_KEY}", timeout=10)
+        v1_response.raise_for_status()
+        v1_data = v1_response.json()
+        v1_balance = float(v1_data.get("balance", 0))
+        await send_log(f"Vak SMS v1 balance: {v1_balance} рублей")
+        if v1_balance >= 10:
+            return True
+
+        # Если v1 не работает или баланс < 10, попробуем v2
+        v2_response = requests.get(f"https://api.vak-sms.com/v2/balance?apiKey={VAK_SMS_API_KEY}", timeout=10)
+        v2_response.raise_for_status()
+        v2_data = v2_response.json()
+        v2_balance = float(v2_data.get("balance", 0))
+        await send_log(f"Vak SMS v2 balance: {v2_balance} рублей")
+        if v2_balance >= 10:
+            return True
+
+        await send_log(f"Баланс Vak SMS ({v1_balance} или {v2_balance} рублей) недостаточен для покупки номера (нужно минимум 10 рублей).")
+        return False
     except Exception as e:
-        await send_log(f"Ошибка проверки баланса Vak SMS: {e}. Ответ API: {response.text if 'response' in locals() else 'нет ответа'}")
+        await send_log(f"Ошибка проверки баланса Vak SMS: {e}. Ответ v1: {v1_response.text if 'v1_response' in locals() else 'нет ответа'}, Ответ v2: {v2_response.text if 'v2_response' in locals() else 'нет ответа'}")
         return False
 
 async def get_vak_sms_number():
     try:
-        response = requests.get(
+        # Попробуем v1
+        v1_response = requests.get(
             f"https://vak-sms.com/api/getNumber?apiKey={VAK_SMS_API_KEY}&service=ms&country=ru",
             timeout=10
         )
-        response.raise_for_status()
-        data = response.json()
-        if data.get("tel"):
-            await send_log(f"Получен номер: {data['tel']}")
-            return data["tel"], data["id"]
-        raise Exception("Vak SMS error")
+        v1_response.raise_for_status()
+        v1_data = v1_response.json()
+        if v1_data.get("tel"):
+            await send_log(f"Получен номер через v1: {v1_data['tel']}")
+            return v1_data["tel"], v1_data["id"], "v1"
+
+        # Если v1 не работает, попробуем v2
+        v2_response = requests.get(
+            f"https://api.vak-sms.com/v2/getNumber?apiKey={VAK_SMS_API_KEY}&service=ms&country=ru",
+            timeout=10
+        )
+        v2_response.raise_for_status()
+        v2_data = v2_response.json()
+        if v2_data.get("tel"):
+            await send_log(f"Получен номер через v2: {v2_data['tel']}")
+            return v2_data["tel"], v2_data["id"], "v2"
+
+        raise Exception("Vak SMS error: не удалось получить номер через v1 или v2")
     except Exception as e:
-        await send_log(f"Ошибка получения номера: {e}")
+        await send_log(f"Ошибка получения номера: {e}. Ответ v1: {v1_response.text if 'v1_response' in locals() else 'нет ответа'}, Ответ v2: {v2_response.text if 'v2_response' in locals() else 'нет ответа'}")
         raise
 
-async def get_vak_sms_code(number_id):
+async def get_vak_sms_code(number_id, api_version):
     for _ in range(5):
         try:
+            # Выбираем версию API в зависимости от того, через какую версию был получен номер
+            base_url = "https://vak-sms.com/api" if api_version == "v1" else "https://api.vak-sms.com/v2"
             response = requests.get(
-                f"https://vak-sms.com/api/getCode?apiKey={VAK_SMS_API_KEY}&id={number_id}",
+                f"{base_url}/getCode?apiKey={VAK_SMS_API_KEY}&id={number_id}",
                 timeout=10
             )
             response.raise_for_status()
             data = response.json()
             if data.get("code"):
-                await send_log(f"Получен код: {data['code']}")
+                await send_log(f"Получен код через {api_version}: {data['code']}")
                 return data["code"]
             time.sleep(10)
         except Exception as e:
-            await send_log(f"Ошибка получения кода: {e}")
+            await send_log(f"Ошибка получения кода через {api_version}: {e}. Ответ: {response.text if 'response' in locals() else 'нет ответа'}")
     return None
 
 async def init_db():
@@ -197,11 +223,13 @@ async def register_profile(driver, conn, settings):
             await send_log("CAPTCHA при регистрации, пропускаем")
             return None
         
-        number, number_id = await get_vak_sms_number()
+        # Покупка номера через Vak SMS (попробуем обе версии API)
+        number, number_id, api_version = await get_vak_sms_number()
         if not number:
             await send_log("Не удалось получить номер для регистрации")
             return None
         
+        # Заполнение формы регистрации
         driver.find_element(By.ID, "email").send_keys(login)
         driver.find_element(By.ID, "password").send_keys(password)
         driver.find_element(By.ID, "name").send_keys(base_name)
@@ -212,7 +240,8 @@ async def register_profile(driver, conn, settings):
         driver.find_element(By.ID, "submit").click()
         time.sleep(random.uniform(3, 7))
         
-        code = await get_vak_sms_code(number_id)
+        # Получение кода верификации (используем ту же версию API, через которую получили номер)
+        code = await get_vak_sms_code(number_id, api_version)
         if code:
             driver.find_element(By.ID, "code").send_keys(code)
             driver.find_element(By.ID, "verify").click()
