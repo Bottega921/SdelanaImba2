@@ -1,4 +1,3 @@
-ndom
 import logging
 import asyncio
 import asyncpg
