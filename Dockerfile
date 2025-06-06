@@ -6,6 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
+    xdg-utils \  # Добавляем xdg-utils для устранения предупреждения
     --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
