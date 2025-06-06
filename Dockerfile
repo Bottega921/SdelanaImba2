@@ -1,20 +1,21 @@
-FROM python:3.8-slim
+FROM python:3.10-slim
 
+# Устанавливаем зависимости системы
+RUN apt-get update && apt-get install -y \
+    chromium \
+    chromium-driver \
+    && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем зависимости Python
 WORKDIR /app
-
-# Установка системных зависимостей
-RUN apt-get update && apt-get install -y chromium chromium-driver xdg-utils --no-install-recommends && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Создание виртуального окружения
-RUN python -m venv /venv
-ENV PATH="/venv/bin:$PATH"
-
-# Копируем и устанавливаем зависимости
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt --no-cache-dir
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем остальные файлы
+# Копируем код
 COPY . .
 
-# Запуск бота
+# Создаем директорию для фотографий
+RUN mkdir -p /app/photos
+
+# Запускаем приложение
 CMD ["python", "bot.py"]
