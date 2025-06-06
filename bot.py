@@ -14,6 +14,7 @@ from selenium.webdriver.common.by import By
 from faker import Faker
 from pathlib import Path
 from dotenv import load_dotenv
+from webdriver_manager.chrome import ChromeDriverManager  # Добавлено для автоматической установки ChromeDriver
 import re
 
 # Загрузка переменных из .env
@@ -205,7 +206,7 @@ def setup_driver(proxy=None):
     chrome_options.add_argument(f"user-agent={fake.user_agent()}")
     if proxy:
         chrome_options.add_argument(f"--proxy-server={proxy}")
-    service = Service("/usr/bin/chromium")
+    service = Service(ChromeDriverManager().install())  # Изменено на ChromeDriverManager
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
@@ -296,7 +297,7 @@ async def start_liking(driver, profile_id: int, conn, context):
         likes = 0
         while likes < likes_limit:
             if driver.find_elements(By.CLASS_NAME, "captcha-form"):
-                await send_log(f"CAPTCHA при лайкинге для ID{profile_id}, пропускаем")
+                await send_log(f"CAPTCHA при лайкинге для ID{profile_id}, пропускаем", context)
                 break
             like_button = driver.find_element(By.CLASS_NAME, "like-button")
             like_button.click()
@@ -416,17 +417,26 @@ async def handle_liking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         conn = await init_db()
         profiles = await conn.fetch("SELECT id FROM profiles WHERE status = 'active' AND likes_count < 200")
-        driver = setup_driver()
+        driver = None  # Инициализируем driver как None
         try:
+            driver = setup_driver()
             for profile in profiles:
                 profile_id = profile["id"]
-                likes = await start_liking(driver, profile_id, conn, context)
+                try:
+                    likes = await start_liking(driver, profile_id, conn, context)
+                except Exception as e:
+                    await send_log(f"Ошибка лайкинга для ID{profile_id}: {e}", context)
         finally:
-            driver.quit()
+            if driver:
+                try:
+                    driver.quit()
+                except Exception as e:
+                    await send_log(f"Ошибка при закрытии драйвера: {e}", context)
             await conn.close()
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text="✅ Лайкинг завершен для всех аккаунтов.")
     except Exception as e:
         await send_log(f"Ошибка в handle_liking: {e}", context)
+        await update.message.reply_text("❌ Ошибка при выполнении лайкинга.", reply_markup=get_main_menu())
 
 async def handle_update_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
