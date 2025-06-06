@@ -19,8 +19,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Настройка логирования
-logging.basicConfig(filename='mamba_bot.log', level=logging.INFO, 
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    filename='mamba_bot.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Конфигурация из .env
@@ -31,20 +34,36 @@ DB_CONFIG = {"dsn": os.getenv("DB_URL")}
 PHOTO_DIR = Path("photos")
 PROXY_LIST = os.getenv("PROXY_LIST", "").split(",")
 
+# Проверка переменных окружения
+if not TELEGRAM_TOKEN:
+    logger.error("TELEGRAM_TOKEN не указан в .env")
+    raise ValueError("TELEGRAM_TOKEN не указан в .env")
+if not ADMIN_CHAT_ID:
+    logger.error("ADMIN_CHAT_ID не указан в .env")
+    raise ValueError("ADMIN_CHAT_ID не указан в .env")
+if not DB_CONFIG["dsn"]:
+    logger.error("DB_URL не указан в .env")
+    raise ValueError("DB_URL не указан в .env")
+if not VAK_SMS_API_KEY:
+    logger.error("VAK_SMS_API_KEY не указан в .env")
+    raise ValueError("VAK_SMS_API_KEY не указан в .env")
+
+logger.info("Переменные окружения загружены успешно")
+
 fake = Faker('ru_RU')
 
 # 10 шаблонов сообщений
 SPAM_TEMPLATES = [
-    "Привет, {name}! Тут неудобно писать, давай в Telegram: {contact}",
-    "Хай, {name}! Лучше продолжим в TG: {contact}",
-    "Здравствуй, {name}! Напиши мне в Telegram, тут не очень: {contact}",
-    "Приветик, {name}! Давай в Telegram, там проще: {contact}",
-    "Добрый день, {name}! Перейдём в TG? Вот контакт: {contact}",
-    "Хай, {name}! В Telegram удобнее болтать: {contact}",
-    "Привет, {name}! Давай в TG, тут некомфортно: {contact}",
-    "Здравствуйте, {name}! Напиши в Telegram: {contact}",
-    "Привет, {name}! Лучше продолжим в TG: {contact}",
-    "Хай, {name}! Давай общаться в Telegram: {contact}"
+    "Привет, {name}! 📩 Тут неудобно писать, давай в Telegram: {contact}",
+    "Хай, {name}! 📲 Лучше продолжим в TG: {contact}",
+    "Здравствуй, {name}! ✉️ Напиши мне в Telegram, тут не очень: {contact}",
+    "Приветик, {name}! 🌐 Давай в Telegram, там проще: {contact}",
+    "Добрый день, {name}! 🔗 Перейдём в TG? Вот контакт: {contact}",
+    "Хай, {name}! 💬 В Telegram удобнее болтать: {contact}",
+    "Привет, {name}! 📱 Давай в TG, тут некомфортно: {contact}",
+    "Здравствуйте, {name}! 📧 Напиши в Telegram: {contact}",
+    "Привет, {name}! 🌍 Лучше продолжим в TG: {contact}",
+    "Хай, {name}! 💌 Давай общаться в Telegram: {contact}"
 ]
 
 async def send_log(message: str, context: ContextTypes.DEFAULT_TYPE = None):
@@ -53,7 +72,7 @@ async def send_log(message: str, context: ContextTypes.DEFAULT_TYPE = None):
         try:
             await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"Лог: {message}")
         except Exception as e:
-            logger.error(f"Failed to send log to Telegram: {e}")
+            logger.error(f"Не удалось отправить лог в Telegram: {e}")
 
 async def check_vak_sms_balance():
     try:
@@ -129,10 +148,10 @@ async def init_db():
 
 def get_main_menu():
     keyboard = [
-        ["Запустить регистрацию", "Запустить лайкинг"],
-        ["Обновить токен", "Загрузить изображения"],
-        ["Удалить изображения", "Запустить спам"],
-        ["Настройки"]
+        ["Запустить регистрацию 📝", "Запустить лайкинг 👍"],
+        ["Обновить токен 🔑", "Загрузить изображения 🖼️"],
+        ["Удалить изображения ❌", "Запустить спам 💬"],
+        ["Настройки ⚙️"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -269,28 +288,31 @@ async def start_spam(driver, profile_id: int, conn, telegram_username):
         await send_log(f"Ошибка спама ID{profile_id}: {e}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Получена команда /start от chat_id: {update.message.chat_id}")
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
-        await update.message.reply_text("Доступ запрещён.")
+        await update.message.reply_text("🚫 Доступ запрещён.")
+        logger.info(f"Доступ запрещён для chat_id: {update.message.chat_id}")
         return
-    await update.message.reply_text("Выберите действие:", reply_markup=get_main_menu())
+    await update.message.reply_text("📋 Выберите действие:", reply_markup=get_main_menu())
     await send_log("Бот запущен", context)
 
 async def handle_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    await update.message.reply_text("Сколько анкет создать (1–10)?")
+    await update.message.reply_text("📥 Сколько анкет создать (1–500)?")
     context.user_data['state'] = 'registration_count'
+    logger.info("Запрошено количество анкет для регистрации")
 
 async def process_registration_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('state') != 'registration_count':
         return
     try:
         count = int(update.message.text)
-        if count < 1 or count > 10:
-            await update.message.reply_text("Введите число от 1 до 10.", reply_markup=get_main_menu())
+        if count < 1 or count > 500:
+            await update.message.reply_text("❌ Введите число от 1 до 500.", reply_markup=get_main_menu())
             return
         if not await check_vak_sms_balance():
-            await update.message.reply_text("Недостаточно средств на Vak SMS.", reply_markup=get_main_menu())
+            await update.message.reply_text("💸 Недостаточно средств на Vak SMS.", reply_markup=get_main_menu())
             return
 
         conn = await init_db()
@@ -300,13 +322,13 @@ async def process_registration_count(update: Update, context: ContextTypes.DEFAU
             for i in range(count):
                 profile_id = await register_profile(driver, conn, settings)
                 if profile_id:
-                    await update.message.reply_text(f"Анкета ID{profile_id} готова")
+                    await update.message.reply_text(f"✅ Анкета ID{profile_id} готова")
         finally:
             driver.quit()
             await conn.close()
-        await update.message.reply_text(f"Готово: {count} анкет.", reply_markup=get_main_menu())
+        await update.message.reply_text(f"🎉 Готово: {count} анкет.", reply_markup=get_main_menu())
     except ValueError:
-        await update.message.reply_text("Введите число.", reply_markup=get_main_menu())
+        await update.message.reply_text("❌ Введите число.", reply_markup=get_main_menu())
     except Exception as e:
         await send_log(f"Ошибка в process_registration_count: {e}", context)
     finally:
@@ -329,11 +351,11 @@ async def handle_liking(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 time.sleep(random.uniform(3, 7))
                 likes = await start_liking(driver, profile["id"], conn)
                 chats = await count_chats(driver, profile["id"], conn)
-                await update.message.reply_text(f"Анкета ID{profile['id']}: {likes} лайков, {chats} чатов")
+                await update.message.reply_text(f"👍 Анкета ID{profile['id']}: {likes} лайков, {chats} чатов")
         finally:
             driver.quit()
             await conn.close()
-        await update.message.reply_text("Лайкинг завершён.", reply_markup=get_main_menu())
+        await update.message.reply_text("🎯 Лайкинг завершён.", reply_markup=get_main_menu())
     except Exception as e:
         await send_log(f"Ошибка в handle_liking: {e}", context)
 
@@ -355,18 +377,18 @@ async def handle_update_token(update: Update, context: ContextTypes.DEFAULT_TYPE
                 token = driver.execute_script("return localStorage.getItem('auth_token')")
                 status = "active" if driver.find_elements(By.CLASS_NAME, "profile-active") else "banned"
                 await conn.execute("UPDATE profiles SET token = $1, status = $2 WHERE id = $3", token, status, profile["id"])
-                await update.message.reply_text(f"Анкета ID{profile['id']}: {status}")
+                await update.message.reply_text(f"🔑 Анкета ID{profile['id']}: {status}")
         finally:
             driver.quit()
             await conn.close()
-        await update.message.reply_text("Обновление токенов завершено.", reply_markup=get_main_menu())
+        await update.message.reply_text("🔄 Обновление токенов завершено.", reply_markup=get_main_menu())
     except Exception as e:
         await send_log(f"Ошибка в handle_update_token: {e}", context)
 
 async def handle_upload_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    await update.message.reply_text("Сколько анкет обновить фото (1–10)?")
+    await update.message.reply_text("📸 Сколько анкет обновить фото (1–500)?")
     context.user_data['state'] = 'upload_photos_count'
 
 async def process_upload_photos_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -374,26 +396,51 @@ async def process_upload_photos_count(update: Update, context: ContextTypes.DEFA
         return
     try:
         count = int(update.message.text)
-        if count < 1 or count > 10:
-            await update.message.reply_text("Введите число от 1 до 10.", reply_markup=get_main_menu())
+        if count < 1 or count > 500:
+            await update.message.reply_text("❌ Введите число от 1 до 500.", reply_markup=get_main_menu())
             return
-        conn = await init_db()
-        profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active' LIMIT $1", count)
-        driver = setup_driver()
-        try:
-            for profile in profiles:
-                photos = random.sample(list(PHOTO_DIR.glob("*.jpg")), k=min(3, len(list(PHOTO_DIR.glob("*.jpg")))))
-                await upload_photos(driver, profile["id"], conn, photos)
-        finally:
-            driver.quit()
-            await conn.close()
-        await update.message.reply_text("Загрузка фото завершена.", reply_markup=get_main_menu())
+        await update.message.reply_text("📤 Отправьте фото для загрузки (до 3 файлов).")
+        context.user_data['state'] = 'upload_photos_files'
+        context.user_data['upload_count'] = count
     except ValueError:
-        await update.message.reply_text("Введите число.", reply_markup=get_main_menu())
+        await update.message.reply_text("❌ Введите число.", reply_markup=get_main_menu())
     except Exception as e:
         await send_log(f"Ошибка в process_upload_photos_count: {e}", context)
-    finally:
-        context.user_data['state'] = None
+
+async def process_upload_photos_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get('state') != 'upload_photos_files':
+        return
+    try:
+        photos = context.user_data.get('photos', [])
+        if update.message.photo:
+            photo_file = await update.message.photo[-1].get_file()
+            photo_path = f"photos/uploaded_{update.message.photo[-1].file_id}.jpg"
+            await photo_file.download_to_drive(photo_path)
+            photos.append(photo_path)
+            if len(photos) >= 3:
+                context.user_data['state'] = None
+            context.user_data['photos'] = photos
+            await update.message.reply_text(f"📸 Фото добавлено ({len(photos)}/3). Отправьте ещё или нажмите /finish_upload.")
+        elif update.message.text == "/finish_upload":
+            count = context.user_data.get('upload_count', 0)
+            if len(photos) == 0:
+                await update.message.reply_text("❌ Нет загруженных фото.", reply_markup=get_main_menu())
+                return
+            conn = await init_db()
+            profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active' LIMIT $1", count)
+            driver = setup_driver()
+            try:
+                for profile in profiles:
+                    await upload_photos(driver, profile["id"], conn, photos)
+            finally:
+                driver.quit()
+                await conn.close()
+            await update.message.reply_text("🖼️ Загрузка фото завершена.", reply_markup=get_main_menu())
+            context.user_data.clear()
+        else:
+            await update.message.reply_text("📤 Отправьте фото или используйте /finish_upload для завершения.")
+    except Exception as e:
+        await send_log(f"Ошибка в process_upload_photos_files: {e}", context)
 
 async def handle_delete_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
@@ -415,14 +462,14 @@ async def handle_delete_photos(update: Update, context: ContextTypes.DEFAULT_TYP
         finally:
             driver.quit()
             await conn.close()
-        await update.message.reply_text("Удаление фото завершено.", reply_markup=get_main_menu())
+        await update.message.reply_text("❌ Удаление фото завершено.", reply_markup=get_main_menu())
     except Exception as e:
         await send_log(f"Ошибка в handle_delete_photos: {e}", context)
 
 async def handle_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    await update.message.reply_text("Сколько анкет использовать для спама (1–10)?")
+    await update.message.reply_text("💬 Сколько анкет использовать для спама (1–500)?")
     context.user_data['state'] = 'spam_count'
 
 async def process_spam_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,8 +477,8 @@ async def process_spam_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     try:
         count = int(update.message.text)
-        if count < 1 or count > 10:
-            await update.message.reply_text("Введите число от 1 до 10.", reply_markup=get_main_menu())
+        if count < 1 or count > 500:
+            await update.message.reply_text("❌ Введите число от 1 до 500.", reply_markup=get_main_menu())
             return
         conn = await init_db()
         telegram_username = await conn.fetchval("SELECT value FROM settings WHERE key = 'telegram_username'") or '@MyBot'
@@ -449,9 +496,9 @@ async def process_spam_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
         finally:
             driver.quit()
             await conn.close()
-        await update.message.reply_text("Спам завершён.", reply_markup=get_main_menu())
+        await update.message.reply_text("📨 Спам завершён.", reply_markup=get_main_menu())
     except ValueError:
-        await update.message.reply_text("Введите число.", reply_markup=get_main_menu())
+        await update.message.reply_text("❌ Введите число.", reply_markup=get_main_menu())
     except Exception as e:
         await send_log(f"Ошибка в process_spam_count: {e}", context)
     finally:
@@ -460,21 +507,21 @@ async def process_spam_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    keyboard = [["Имя", "Возраст"], ["Telegram"]]
-    await update.message.reply_text("Выберите настройку:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    keyboard = [["Имя 📛", "Возраст 🎂"], ["Telegram 💬"]]
+    await update.message.reply_text("⚙️ Выберите настройку:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     context.user_data['state'] = 'settings'
 
 async def handle_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('state') != 'settings':
         return
     text = update.message.text
-    if text in ["Имя", "Возраст", "Telegram"]:
-        key = {"Имя": "name", "Возраст": "age", "Telegram": "telegram_username"}[text]
+    if text in ["Имя 📛", "Возраст 🎂", "Telegram 💬"]:
+        key = {"Имя 📛": "name", "Возраст 🎂": "age", "Telegram 💬": "telegram_username"}[text]
         context.user_data['setting_key'] = key
-        await update.message.reply_text(f"Введите {text}:", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(f"📝 Введите {text.split()[0]}:", reply_markup=ReplyKeyboardRemove())
         context.user_data['state'] = 'save_setting'
     else:
-        await update.message.reply_text("Выберите настройку.", reply_markup=get_main_menu())
+        await update.message.reply_text("⚙️ Выберите настройку.", reply_markup=get_main_menu())
         context.user_data['state'] = None
 
 async def save_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -486,7 +533,7 @@ async def save_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = await init_db()
         await conn.execute("INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", key, value)
         await conn.close()
-        await update.message.reply_text(f"{key} сохранено: {value}", reply_markup=get_main_menu())
+        await update.message.reply_text(f"✅ {key} сохранено: {value}", reply_markup=get_main_menu())
         await send_log(f"Настройка {key}: {value}", context)
     except Exception as e:
         await send_log(f"Ошибка настройки: {e}", context)
@@ -495,41 +542,55 @@ async def save_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    logger.info(f"Получено сообщение: {text}")
     if context.user_data.get('state') == 'registration_count':
         await process_registration_count(update, context)
     elif context.user_data.get('state') == 'upload_photos_count':
         await process_upload_photos_count(update, context)
+    elif context.user_data.get('state') == 'upload_photos_files':
+        await process_upload_photos_files(update, context)
     elif context.user_data.get('state') == 'spam_count':
         await process_spam_count(update, context)
     elif context.user_data.get('state') == 'settings':
         await handle_settings(update, context)
     elif context.user_data.get('state') == 'save_setting':
         await save_setting(update, context)
-    elif text == "Запустить регистрацию":
+    elif text == "Запустить регистрацию 📝":
         await handle_registration(update, context)
-    elif text == "Запустить лайкинг":
+    elif text == "Запустить лайкинг 👍":
         await handle_liking(update, context)
-    elif text == "Обновить токен":
+    elif text == "Обновить токен 🔑":
         await handle_update_token(update, context)
-    elif text == "Загрузить изображения":
+    elif text == "Загрузить изображения 🖼️":
         await handle_upload_photos(update, context)
-    elif text == "Удалить изображения":
+    elif text == "Удалить изображения ❌":
         await handle_delete_photos(update, context)
-    elif text == "Запустить спам":
+    elif text == "Запустить спам 💬":
         await handle_spam(update, context)
-    elif text == "Настройки":
+    elif text == "Настройки ⚙️":
         await settings_menu(update, context)
 
 def main():
     try:
+        logger.info("Инициализация бота...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
         logger.info("Бот инициализирован")
+        
+        # Добавляем обработчики
         application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(MessageHandler(filters.PHOTO, process_upload_photos_files))
         application.add_handler(MessageHandler(filters.Text() & ~filters.Command(), message_handler))
+        application.add_handler(CommandHandler("finish_upload", process_upload_photos_files))
         logger.info("Обработчики добавлены")
-        application.run_polling()
+        
+        # Запускаем polling
+        logger.info("Запуск polling...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        logger.info("Polling запущен")
     except Exception as e:
-        logger.error(f"Ошибка запуска: {e}")
+        logger.error(f"Ошибка запуска бота: {e}")
+        raise
 
 if __name__ == '__main__':
+    logger.info("Запуск приложения...")
     main()
