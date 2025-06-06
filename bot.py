@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация из .env
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-VAK_SMS_API_KEY = os.getenv("VAK_SMS_API_KEY")  # Возвращаем Vak SMS
+VAK_SMS_API_KEY = os.getenv("VAK_SMS_API_KEY")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DB_CONFIG = {"dsn": os.getenv("DB_URL")}
 PHOTO_DIR = Path("photos")
@@ -74,6 +74,10 @@ SPAM_TEMPLATES = [
     "Хай, {name}! 💌 Давай общаться в другом чате: [контакт]"
 ]
 
+def get_cancel_keyboard():
+    keyboard = [["Отменить действие 🚫"]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 async def send_log(message: str, context: ContextTypes.DEFAULT_TYPE = None):
     logger.info(message)
     if context and context.bot:
@@ -86,11 +90,15 @@ async def check_vak_sms_balance():
     try:
         response = requests.get(f"https://vak-sms.com/api/balance?apiKey={VAK_SMS_API_KEY}", timeout=10)
         response.raise_for_status()
-        balance = response.json().get("balance", 0)
-        await send_log(f"Vak SMS balance: {balance}")
-        return balance > 0
+        data = response.json()
+        balance = float(data.get("balance", 0))  # Приводим к float, чтобы точно сравнивать
+        await send_log(f"Vak SMS balance: {balance} рублей")
+        if balance < 10:  # Минимальная сумма для покупки номера (примерно 10 рублей)
+            await send_log(f"Баланс Vak SMS ({balance} рублей) недостаточен для покупки номера (нужно минимум 10 рублей).")
+            return False
+        return True
     except Exception as e:
-        await send_log(f"Ошибка Vak SMS: {e}")
+        await send_log(f"Ошибка проверки баланса Vak SMS: {e}. Ответ API: {response.text if 'response' in locals() else 'нет ответа'}")
         return False
 
 async def get_vak_sms_number():
@@ -179,7 +187,6 @@ async def register_profile(driver, conn, settings):
     try:
         base_name = next((s['value'] for s in settings if s['key'] == 'name'), 'Анастасия')
         age = int(next((s['value'] for s in settings if s['key'] == 'age'), '25'))
-        # Генерация "левой" Gmail-почты
         login = f"{fake.first_name().lower()}{fake.random_int(100, 999)}@gmail.com"
         password = fake.password()
         description = fake.text(max_nb_chars=200)
@@ -190,13 +197,11 @@ async def register_profile(driver, conn, settings):
             await send_log("CAPTCHA при регистрации, пропускаем")
             return None
         
-        # Покупка номера через Vak SMS
         number, number_id = await get_vak_sms_number()
         if not number:
             await send_log("Не удалось получить номер для регистрации")
             return None
         
-        # Заполнение формы регистрации
         driver.find_element(By.ID, "email").send_keys(login)
         driver.find_element(By.ID, "password").send_keys(password)
         driver.find_element(By.ID, "name").send_keys(base_name)
@@ -207,13 +212,11 @@ async def register_profile(driver, conn, settings):
         driver.find_element(By.ID, "submit").click()
         time.sleep(random.uniform(3, 7))
         
-        # Получение кода верификации
         code = await get_vak_sms_code(number_id)
         if code:
             driver.find_element(By.ID, "code").send_keys(code)
             driver.find_element(By.ID, "verify").click()
             time.sleep(random.uniform(3, 7))
-            # Завершение регистрации и оформление профиля
             token = driver.execute_script("return localStorage.getItem('auth_token')")
             photos = random.sample(list(PHOTO_DIR.glob("*.jpg")), k=min(3, len(list(PHOTO_DIR.glob("*.jpg")))))
             profile_id = await conn.fetchval(
@@ -339,7 +342,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    await update.message.reply_text("📥 Сколько анкет создать (1–500)?")
+    await update.message.reply_text("📥 Сколько анкет создать (1–500)?", reply_markup=get_cancel_keyboard())
     context.user_data['state'] = 'registration_count'
     logger.info("Запрошено количество анкет для регистрации")
 
@@ -425,7 +428,7 @@ async def handle_update_token(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_upload_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    await update.message.reply_text("📸 Сколько анкет добавить изображения (1–500)?")
+    await update.message.reply_text("📸 Сколько добавить изображений?", reply_markup=get_cancel_keyboard())
     context.user_data['state'] = 'upload_photos_count'
 
 async def process_upload_photos_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -520,7 +523,7 @@ async def handle_delete_photos(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    await update.message.reply_text("💬 Сколько анкет использовать для спама (1–500)?")
+    await update.message.reply_text("💬 Сколько анкет использовать для спама (1–500)?", reply_markup=get_cancel_keyboard())
     context.user_data['state'] = 'spam_count'
 
 async def process_spam_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -571,7 +574,7 @@ async def handle_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    keyboard = [["Имя 📛", "Возраст 🎂"], ["Telegram 💬", "Доп. имена ➕"]]
+    keyboard = [["Имя 📛", "Возраст 🎂"], ["Telegram 💬", "Доп. имена ➕"], ["Отменить действие 🚫"]]
     await update.message.reply_text("⚙️ Выберите настройку:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     context.user_data['state'] = 'settings'
 
@@ -607,6 +610,10 @@ async def save_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     logger.info(f"Получено сообщение: {text}")
+    if text == "Отменить действие 🚫":
+        context.user_data.clear()
+        await update.message.reply_text("🚫 Действие отменено.", reply_markup=get_main_menu())
+        return
     if context.user_data.get('state') == 'registration_count':
         await process_registration_count(update, context)
     elif context.user_data.get('state') == 'upload_photos_count':
@@ -642,14 +649,12 @@ def main():
         application = Application.builder().token(TELEGRAM_TOKEN).build()
         logger.info("Бот инициализирован")
         
-        # Добавляем обработчики
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(MessageHandler(filters.PHOTO, process_upload_photos_files))
         application.add_handler(MessageHandler(filters.Text() & ~filters.Command(), message_handler))
         application.add_handler(CommandHandler("finish_upload", process_upload_photos_files))
         logger.info("Обработчики добавлены")
         
-        # Запускаем polling
         logger.info("Запуск polling...")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
         logger.info("Polling запущен")
