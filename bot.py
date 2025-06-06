@@ -1,3 +1,6 @@
+import os
+import time
+import random
 import logging
 import asyncio
 import asyncpg
@@ -11,6 +14,7 @@ from selenium.webdriver.common.by import By
 from faker import Faker
 from pathlib import Path
 from dotenv import load_dotenv
+import re
 
 # Загрузка переменных из .env
 load_dotenv()
@@ -25,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация из .env
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-VAK_SMS_API_KEY = os.getenv("VAK_SMS_API_KEY")
+SMS_ACTIVATE_API_KEY = os.getenv("SMS_ACTIVATE_API_KEY")  # Новый ключ для SMS-Activate
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DB_CONFIG = {"dsn": os.getenv("DB_URL")}
 PHOTO_DIR = Path("photos")
@@ -35,32 +39,39 @@ PROXY_LIST = os.getenv("PROXY_LIST", "").split(",")
 if not TELEGRAM_TOKEN:
     logger.error("TELEGRAM_TOKEN не указан в .env")
     raise ValueError("TELEGRAM_TOKEN не указан в .env")
+if not SMS_ACTIVATE_API_KEY:
+    logger.error("SMS_ACTIVATE_API_KEY не указан в .env")
+    raise ValueError("SMS_ACTIVATE_API_KEY не указан в .env")
 if not ADMIN_CHAT_ID:
     logger.error("ADMIN_CHAT_ID не указан в .env")
     raise ValueError("ADMIN_CHAT_ID не указан в .env")
 if not DB_CONFIG["dsn"]:
     logger.error("DB_URL не указан в .env")
     raise ValueError("DB_URL не указан в .env")
-if not VAK_SMS_API_KEY:
-    logger.error("VAK_SMS_API_KEY не указан в .env")
-    raise ValueError("VAK_SMS_API_KEY не указан в .env")
 
 logger.info("Переменные окружения загружены успешно")
 
 fake = Faker('ru_RU')
 
-# 10 шаблонов сообщений
+# Варианты уменьшительно-ласкательных имён
+NAME_VARIATIONS = {
+    "Анастасия": ["Настя", "Настенька", "Настасья", "Ася"],
+    "Екатерина": ["Катя", "Катерина", "Катюша", "Екатерина"],
+    "Мария": ["Маша", "Машенька", "Маришка", "Маруся"],
+}
+
+# 10 шаблонов сообщений без "Telegram"
 SPAM_TEMPLATES = [
-    "Привет, {name}! 📩 Тут неудобно писать, давай в Telegram: {contact}",
-    "Хай, {name}! 📲 Лучше продолжим в TG: {contact}",
-    "Здравствуй, {name}! ✉️ Напиши мне в Telegram, тут не очень: {contact}",
-    "Приветик, {name}! 🌐 Давай в Telegram, там проще: {contact}",
-    "Добрый день, {name}! 🔗 Перейдём в TG? Вот контакт: {contact}",
-    "Хай, {name}! 💬 В Telegram удобнее болтать: {contact}",
-    "Привет, {name}! 📱 Давай в TG, тут некомфортно: {contact}",
-    "Здравствуйте, {name}! 📧 Напиши в Telegram: {contact}",
-    "Привет, {name}! 🌍 Лучше продолжим в TG: {contact}",
-    "Хай, {name}! 💌 Давай общаться в Telegram: {contact}"
+    "Привет, {name}! 📩 Тут неудобно писать, давай в другой чат: [контакт]",
+    "Хай, {name}! 📲 Лучше продолжим в другом месте: [контакт]",
+    "Здравствуй, {name}! ✉️ Напиши мне в другой чат, тут не очень: [контакт]",
+    "Приветик, {name}! 🌐 Давай в другом месте, там проще: [контакт]",
+    "Добрый день, {name}! 🔗 Перейдём в другой чат? Вот контакт: [контакт]",
+    "Хай, {name}! 💬 В другом месте удобнее болтать: [контакт]",
+    "Привет, {name}! 📱 Давай в другом месте, тут некомфортно: [контакт]",
+    "Здравствуйте, {name}! 📧 Напиши в другой чат: [контакт]",
+    "Привет, {name}! 🌍 Лучше продолжим в другом месте: [контакт]",
+    "Хай, {name}! 💌 Давай общаться в другом чате: [контакт]"
 ]
 
 async def send_log(message: str, context: ContextTypes.DEFAULT_TYPE = None):
@@ -71,49 +82,66 @@ async def send_log(message: str, context: ContextTypes.DEFAULT_TYPE = None):
         except Exception as e:
             logger.error(f"Не удалось отправить лог в Telegram: {e}")
 
-async def check_vak_sms_balance():
+async def check_sms_activate_balance():
     try:
-        response = requests.get(f"https://vak-sms.com/api/balance?apiKey={VAK_SMS_API_KEY}", timeout=10)
+        response = requests.get(f"https://api.sms-activate.io/stubs/handler_api.php?api_key={SMS_ACTIVATE_API_KEY}&action=getBalance", timeout=10)
         response.raise_for_status()
-        balance = response.json().get("balance", 0)
-        await send_log(f"Vak SMS balance: {balance}")
+        balance = float(response.text.split(":")[1])
+        await send_log(f"SMS-Activate balance: {balance} RUB")
         return balance > 0
     except Exception as e:
-        await send_log(f"Ошибка Vak SMS: {e}")
+        await send_log(f"Ошибка SMS-Activate: {e}")
         return False
 
-async def get_vak_sms_number():
+async def get_sms_activate_number():
     try:
         response = requests.get(
-            f"https://vak-sms.com/api/getNumber?apiKey={VAK_SMS_API_KEY}&service=ms&country=ru",
+            f"https://api.sms-activate.io/stubs/handler_api.php?api_key={SMS_ACTIVATE_API_KEY}&action=getNumber&service=mm&country=0",
             timeout=10
         )
         response.raise_for_status()
-        data = response.json()
-        if data.get("tel"):
-            await send_log(f"Получен номер: {data['tel']}")
-            return data["tel"], data["id"]
-        raise Exception("Vak SMS error")
+        data = response.text.split(":")
+        if data[0] == "ACCESS_NUMBER":
+            activation_id = data[1]
+            number = data[2]
+            await send_log(f"Получен номер: +{number}, ID активации: {activation_id}")
+            return number, activation_id
+        raise Exception("SMS-Activate error: No numbers available")
     except Exception as e:
         await send_log(f"Ошибка получения номера: {e}")
         raise
 
-async def get_vak_sms_code(number_id):
+async def get_sms_activate_code(activation_id):
     for _ in range(5):
         try:
             response = requests.get(
-                f"https://vak-sms.com/api/getCode?apiKey={VAK_SMS_API_KEY}&id={number_id}",
+                f"https://api.sms-activate.io/stubs/handler_api.php?api_key={SMS_ACTIVATE_API_KEY}&action=getStatus&id={activation_id}",
                 timeout=10
             )
             response.raise_for_status()
-            data = response.json()
-            if data.get("code"):
-                await send_log(f"Получен код: {data['code']}")
-                return data["code"]
-            time.sleep(10)
+            if "STATUS_OK" in response.text:
+                code = response.text.split(":")[1]
+                await send_log(f"Получен код: {code}")
+                return code
+            elif "STATUS_WAIT_CODE" in response.text:
+                time.sleep(10)
+                continue
+            else:
+                raise Exception("SMS-Activate error: " + response.text)
         except Exception as e:
             await send_log(f"Ошибка получения кода: {e}")
     return None
+
+async def set_sms_activate_status(activation_id, status):
+    try:
+        response = requests.get(
+            f"https://api.sms-activate.io/stubs/handler_api.php?api_key={SMS_ACTIVATE_API_KEY}&action=setStatus&id={activation_id}&status={status}",
+            timeout=10
+        )
+        response.raise_for_status()
+        await send_log(f"Статус активации {activation_id} изменён на {status}")
+    except Exception as e:
+        await send_log(f"Ошибка изменения статуса активации: {e}")
 
 async def init_db():
     try:
@@ -146,9 +174,9 @@ async def init_db():
 def get_main_menu():
     keyboard = [
         ["Запустить регистрацию 📝", "Запустить лайкинг 👍"],
-        ["Обновить токен 🔑", "Загрузить изображения 🖼️"],
+        ["Обновить токен 🔑", "Добавить изображения 🖼️"],
         ["Удалить изображения ❌", "Запустить спам 💬"],
-        ["Настройки ⚙️"]
+        ["Статистика 📊", "Настройки ⚙️"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -166,9 +194,10 @@ def setup_driver(proxy=None):
 
 async def register_profile(driver, conn, settings):
     try:
-        name = next((s['value'] for s in settings if s['key'] == 'name'), 'Анна')
+        base_name = next((s['value'] for s in settings if s['key'] == 'name'), 'Анастасия')
         age = int(next((s['value'] for s in settings if s['key'] == 'age'), '25'))
-        login = fake.email()
+        # Генерация "левой" Gmail-почты
+        login = f"{fake.first_name().lower()}{fake.random_int(100, 999)}@gmail.com"
         password = fake.password()
         description = fake.text(max_nb_chars=200)
         
@@ -177,33 +206,47 @@ async def register_profile(driver, conn, settings):
         if driver.find_elements(By.CLASS_NAME, "captcha-form"):
             await send_log("CAPTCHA при регистрации, пропускаем")
             return None
+        
+        # Покупка номера через SMS-Activate
+        number, activation_id = await get_sms_activate_number()
+        if not number:
+            await send_log("Не удалось получить номер для регистрации")
+            return None
+        
+        # Заполнение формы регистрации
         driver.find_element(By.ID, "email").send_keys(login)
         driver.find_element(By.ID, "password").send_keys(password)
-        driver.find_element(By.ID, "name").send_keys(name)
+        driver.find_element(By.ID, "name").send_keys(base_name)
         driver.find_element(By.ID, "age").send_keys(str(age))
         driver.find_element(By.ID, "gender").find_element(By.XPATH, "//option[@value='female']").click()
         driver.find_element(By.ID, "description").send_keys(description)
-        number, number_id = await get_vak_sms_number()
-        driver.find_element(By.ID, "phone").send_keys(number)
+        driver.find_element(By.ID, "phone").send_keys(f"+{number}")
         driver.find_element(By.ID, "submit").click()
         time.sleep(random.uniform(3, 7))
-        code = await get_vak_sms_code(number_id)
+        
+        # Получение кода верификации
+        await set_sms_activate_status(activation_id, 1)  # Сообщаем, что готовы принимать SMS
+        code = await get_sms_activate_code(activation_id)
         if code:
             driver.find_element(By.ID, "code").send_keys(code)
             driver.find_element(By.ID, "verify").click()
             time.sleep(random.uniform(3, 7))
+            await set_sms_activate_status(activation_id, 6)  # Успешное получение кода
+            # Завершение регистрации и оформление профиля
             token = driver.execute_script("return localStorage.getItem('auth_token')")
             photos = random.sample(list(PHOTO_DIR.glob("*.jpg")), k=min(3, len(list(PHOTO_DIR.glob("*.jpg")))))
             profile_id = await conn.fetchval(
                 "INSERT INTO profiles (login, password, name, age, description, status, likes_count, chats_count, token, photos) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
-                login, password, name, age, description, "active", 0, 0, token, [str(p) for p in photos]
+                login, password, base_name, age, description, "active", 0, 0, token, [str(p) for p in photos]
             )
             await upload_photos(driver, profile_id, conn, photos)
-            likes = await start_liking(driver, profile_id, conn)
-            chats = await count_chats(driver, profile_id, conn)
-            await send_log(f"Анкета ID{profile_id}: {likes} лайков, {chats} чатов")
+            await send_log(f"Анкета ID{profile_id} успешно зарегистрирована")
             return profile_id
+        else:
+            await set_sms_activate_status(activation_id, 8)  # Отмена активации
+            await send_log("Не удалось получить код верификации")
+            return None
     except Exception as e:
         await send_log(f"Ошибка регистрации: {e}")
         return None
@@ -225,25 +268,39 @@ async def upload_photos(driver, profile_id: int, conn, photos: list):
     except Exception as e:
         await send_log(f"Ошибка загрузки фото ID{profile_id}: {e}")
 
-async def start_liking(driver, profile_id: int, conn):
+async def start_liking(driver, profile_id: int, conn, context):
     try:
+        driver.get("https://www.mamba.ru/login")
+        time.sleep(random.uniform(3, 7))
+        conn_profile = await conn.fetchrow("SELECT login, password FROM profiles WHERE id = $1", profile_id)
+        driver.find_element(By.ID, "email").send_keys(conn_profile["login"])
+        driver.find_element(By.ID, "password").send_keys(conn_profile["password"])
+        driver.find_element(By.ID, "login").click()
+        time.sleep(random.uniform(3, 7))
+        
         driver.get("https://www.mamba.ru/search")
         time.sleep(random.uniform(3, 7))
-        likes_limit = 200 if driver.find_elements(By.CLASS_NAME, "vip-badge") else 2
+        likes_limit = 200
         likes = 0
-        for _ in range(likes_limit):
+        while likes < likes_limit:
             if driver.find_elements(By.CLASS_NAME, "captcha-form"):
-                await send_log("CAPTCHA при лайкинге, пропускаем")
+                await send_log(f"CAPTCHA при лайкинге для ID{profile_id}, пропускаем")
                 break
             like_button = driver.find_element(By.CLASS_NAME, "like-button")
             like_button.click()
             likes += 1
             await conn.execute("UPDATE profiles SET likes_count = likes_count + 1 WHERE id = $1", profile_id)
+            chats = await count_chats(driver, profile_id, conn)
+            await conn.execute("UPDATE profiles SET chats_count = $1 WHERE id = $2", chats, profile_id)
+            if likes % 50 == 0:
+                await update_message(context, profile_id, likes, chats)
             time.sleep(random.uniform(5, 10))
-        logger.info(f"Profile ID{profile_id}: {likes} likes")
+        await update_message(context, profile_id, likes, chats)
+        if likes >= likes_limit:
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"🎉 Аккаунт ID{profile_id} достиг лимита 200 лайков!")
         return likes
     except Exception as e:
-        logger.error(f"Liking error: {e}")
+        logger.error(f"Liking error for ID{profile_id}: {e}")
         return 0
 
 async def count_chats(driver, profile_id: int, conn):
@@ -255,7 +312,7 @@ async def count_chats(driver, profile_id: int, conn):
         logger.info(f"Profile ID{profile_id}: {chats} chats")
         return chats
     except Exception as e:
-        logger.error(f"Chat count error: {e}")
+        logger.error(f"Chat count error for ID{profile_id}: {e}")
         return 0
 
 async def start_spam(driver, profile_id: int, conn, telegram_username):
@@ -273,16 +330,22 @@ async def start_spam(driver, profile_id: int, conn, telegram_username):
             name = chat.find_element(By.CLASS_NAME, "chat-name").text
             chat.click()
             time.sleep(random.uniform(1, 3))
-            message = random.choice(SPAM_TEMPLATES).format(name=name, contact=telegram_username)
+            message = random.choice(SPAM_TEMPLATES).format(name=name, contact="[контакт]")
             driver.find_element(By.CLASS_NAME, "message-input").send_keys(message)
-            driver.find_element(By.CLASS_NAME, "contacts-button").click()
-            driver.find_element(By.ID, "telegram-contact").send_keys(telegram_username)
-            driver.find_element(By.CLASS_NAME, "send-message-button").click()
+            contact_button = driver.find_element(By.CLASS_NAME, "attach-button")
+            contact_button.click()
+            time.sleep(random.uniform(1, 2))
+            driver.find_element(By.CLASS_NAME, "contact-option").click()
+            driver.find_element(By.ID, "contact-input").send_keys(telegram_username)
+            driver.find_element(By.ID, "send-contact").click()
             messages_sent += 1
             time.sleep(random.uniform(3, 7))
         await send_log(f"Спам отправлен для ID{profile_id}: {messages_sent} сообщений")
     except Exception as e:
         await send_log(f"Ошибка спама ID{profile_id}: {e}")
+
+async def update_message(context, profile_id, likes, chats):
+    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📊 Статистика ID{profile_id}: {likes} лайков, {chats} чатов")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Получена команда /start от chat_id: {update.message.chat_id}")
@@ -308,22 +371,26 @@ async def process_registration_count(update: Update, context: ContextTypes.DEFAU
         if count < 1 or count > 500:
             await update.message.reply_text("❌ Введите число от 1 до 500.", reply_markup=get_main_menu())
             return
-        if not await check_vak_sms_balance():
-            await update.message.reply_text("💸 Недостаточно средств на Vak SMS.", reply_markup=get_main_menu())
+        if not await check_sms_activate_balance():
+            await update.message.reply_text("💸 Недостаточно средств на SMS-Activate.", reply_markup=get_main_menu())
             return
 
         conn = await init_db()
         settings = await conn.fetch("SELECT * FROM settings")
+        extra_names = next((s['value'].split(',') for s in settings if s['key'] == 'extra_names'), [])
+        name_variations = [next((s['value'] for s in settings if s['key'] == 'name'), 'Анастасия')] + extra_names
         driver = setup_driver()
+        successful_registrations = 0
         try:
             for i in range(count):
                 profile_id = await register_profile(driver, conn, settings)
                 if profile_id:
-                    await update.message.reply_text(f"✅ Анкета ID{profile_id} готова")
+                    successful_registrations += 1
         finally:
             driver.quit()
             await conn.close()
-        await update.message.reply_text(f"🎉 Готово: {count} анкет.", reply_markup=get_main_menu())
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"🎉 Успешно зарегистрировано {successful_registrations} аккаунтов из {count}!")
+        await update.message.reply_text("✅ Регистрация завершена. Выберите следующее действие.", reply_markup=get_main_menu())
     except ValueError:
         await update.message.reply_text("❌ Введите число.", reply_markup=get_main_menu())
     except Exception as e:
@@ -336,23 +403,16 @@ async def handle_liking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         conn = await init_db()
-        profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active'")
+        profiles = await conn.fetch("SELECT id FROM profiles WHERE status = 'active' AND likes_count < 200")
         driver = setup_driver()
         try:
             for profile in profiles:
-                driver.get("https://www.mamba.ru/login")
-                time.sleep(random.uniform(3, 7))
-                driver.find_element(By.ID, "email").send_keys(profile["login"])
-                driver.find_element(By.ID, "password").send_keys(profile["password"])
-                driver.find_element(By.ID, "login").click()
-                time.sleep(random.uniform(3, 7))
-                likes = await start_liking(driver, profile["id"], conn)
-                chats = await count_chats(driver, profile["id"], conn)
-                await update.message.reply_text(f"👍 Анкета ID{profile['id']}: {likes} лайков, {chats} чатов")
+                profile_id = profile["id"]
+                likes = await start_liking(driver, profile_id, conn, context)
         finally:
             driver.quit()
             await conn.close()
-        await update.message.reply_text("🎯 Лайкинг завершён.", reply_markup=get_main_menu())
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text="✅ Лайкинг завершен для всех аккаунтов.")
     except Exception as e:
         await send_log(f"Ошибка в handle_liking: {e}", context)
 
@@ -374,7 +434,7 @@ async def handle_update_token(update: Update, context: ContextTypes.DEFAULT_TYPE
                 token = driver.execute_script("return localStorage.getItem('auth_token')")
                 status = "active" if driver.find_elements(By.CLASS_NAME, "profile-active") else "banned"
                 await conn.execute("UPDATE profiles SET token = $1, status = $2 WHERE id = $3", token, status, profile["id"])
-                await update.message.reply_text(f"🔑 Анкета ID{profile['id']}: {status}")
+                await update_message(context, profile["id"], 0, 0)
         finally:
             driver.quit()
             await conn.close()
@@ -385,7 +445,7 @@ async def handle_update_token(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_upload_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    await update.message.reply_text("📸 Сколько анкет обновить фото (1–500)?")
+    await update.message.reply_text("📸 Сколько анкет добавить изображения (1–500)?")
     context.user_data['state'] = 'upload_photos_count'
 
 async def process_upload_photos_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -396,9 +456,11 @@ async def process_upload_photos_count(update: Update, context: ContextTypes.DEFA
         if count < 1 or count > 500:
             await update.message.reply_text("❌ Введите число от 1 до 500.", reply_markup=get_main_menu())
             return
-        await update.message.reply_text("📤 Отправьте фото для загрузки (до 3 файлов).")
+        await update.message.reply_text(f"📤 Отправьте {count} фото (сжатые или оригинальные, по одному на анкету). Используйте /finish_upload после отправки всех фото.")
         context.user_data['state'] = 'upload_photos_files'
         context.user_data['upload_count'] = count
+        context.user_data['photos_received'] = 0
+        context.user_data['photos'] = []
     except ValueError:
         await update.message.reply_text("❌ Введите число.", reply_markup=get_main_menu())
     except Exception as e:
@@ -408,34 +470,46 @@ async def process_upload_photos_files(update: Update, context: ContextTypes.DEFA
     if context.user_data.get('state') != 'upload_photos_files':
         return
     try:
+        count = context.user_data.get('upload_count', 0)
+        photos_received = context.user_data.get('photos_received', 0)
         photos = context.user_data.get('photos', [])
         if update.message.photo:
+            if photos_received >= count:
+                await update.message.reply_text("❌ Достигнут лимит фото.", reply_markup=get_main_menu())
+                context.user_data.clear()
+                return
             photo_file = await update.message.photo[-1].get_file()
             photo_path = f"photos/uploaded_{update.message.photo[-1].file_id}.jpg"
             await photo_file.download_to_drive(photo_path)
             photos.append(photo_path)
-            if len(photos) >= 3:
-                context.user_data['state'] = None
+            photos_received += 1
+            context.user_data['photos_received'] = photos_received
             context.user_data['photos'] = photos
-            await update.message.reply_text(f"📸 Фото добавлено ({len(photos)}/3). Отправьте ещё или нажмите /finish_upload.")
+            await update.message.reply_text(f"📸 Фото {photos_received}/{count} добавлено (сохранено как {photo_path}). Отправьте ещё или используйте /finish_upload.")
         elif update.message.text == "/finish_upload":
-            count = context.user_data.get('upload_count', 0)
-            if len(photos) == 0:
+            if photos_received == 0:
                 await update.message.reply_text("❌ Нет загруженных фото.", reply_markup=get_main_menu())
+                context.user_data.clear()
+                return
+            if photos_received < count:
+                await update.message.reply_text(f"⚠️ Загружено {photos_received} из {count} фото. Завершить?")
                 return
             conn = await init_db()
             profiles = await conn.fetch("SELECT id, login, password FROM profiles WHERE status = 'active' LIMIT $1", count)
             driver = setup_driver()
             try:
-                for profile in profiles:
-                    await upload_photos(driver, profile["id"], conn, photos)
+                for i, profile in enumerate(profiles):
+                    if i < len(photos):
+                        await upload_photos(driver, profile["id"], conn, [photos[i]])
+                    else:
+                        await upload_photos(driver, profile["id"], conn, [])
             finally:
                 driver.quit()
                 await conn.close()
-            await update.message.reply_text("🖼️ Загрузка фото завершена.", reply_markup=get_main_menu())
+            await update.message.reply_text("🖼️ Добавление изображений завершено.", reply_markup=get_main_menu())
             context.user_data.clear()
         else:
-            await update.message.reply_text("📤 Отправьте фото или используйте /finish_upload для завершения.")
+            await update.message.reply_text(f"📤 Отправьте фото или используйте /finish_upload (получено {photos_received}/{count}).")
     except Exception as e:
         await send_log(f"Ошибка в process_upload_photos_files: {e}", context)
 
@@ -501,10 +575,23 @@ async def process_spam_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
     finally:
         context.user_data['state'] = None
 
+async def handle_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.chat_id) != ADMIN_CHAT_ID:
+        return
+    try:
+        conn = await init_db()
+        profiles = await conn.fetch("SELECT id, likes_count, chats_count FROM profiles WHERE status = 'active'")
+        stats_message = "📊 Статистика аккаунтов:\n"
+        for profile in profiles:
+            stats_message += f"ID{profile['id']}: {profile['likes_count']} лайков, {profile['chats_count']} чатов\n"
+        await update.message.reply_text(stats_message or "📊 Нет данных о профилях.", reply_markup=get_main_menu())
+    except Exception as e:
+        await send_log(f"Ошибка в handle_statistics: {e}", context)
+
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) != ADMIN_CHAT_ID:
         return
-    keyboard = [["Имя 📛", "Возраст 🎂"], ["Telegram 💬"]]
+    keyboard = [["Имя 📛", "Возраст 🎂"], ["Telegram 💬", "Доп. имена ➕"]]
     await update.message.reply_text("⚙️ Выберите настройку:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     context.user_data['state'] = 'settings'
 
@@ -512,8 +599,8 @@ async def handle_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('state') != 'settings':
         return
     text = update.message.text
-    if text in ["Имя 📛", "Возраст 🎂", "Telegram 💬"]:
-        key = {"Имя 📛": "name", "Возраст 🎂": "age", "Telegram 💬": "telegram_username"}[text]
+    if text in ["Имя 📛", "Возраст 🎂", "Telegram 💬", "Доп. имена ➕"]:
+        key = {"Имя 📛": "name", "Возраст 🎂": "age", "Telegram 💬": "telegram_username", "Доп. имена ➕": "extra_names"}[text]
         context.user_data['setting_key'] = key
         await update.message.reply_text(f"📝 Введите {text.split()[0]}:", reply_markup=ReplyKeyboardRemove())
         context.user_data['state'] = 'save_setting'
@@ -558,12 +645,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_liking(update, context)
     elif text == "Обновить токен 🔑":
         await handle_update_token(update, context)
-    elif text == "Загрузить изображения 🖼️":
+    elif text == "Добавить изображения 🖼️":
         await handle_upload_photos(update, context)
     elif text == "Удалить изображения ❌":
         await handle_delete_photos(update, context)
     elif text == "Запустить спам 💬":
         await handle_spam(update, context)
+    elif text == "Статистика 📊":
+        await handle_statistics(update, context)
     elif text == "Настройки ⚙️":
         await settings_menu(update, context)
 
